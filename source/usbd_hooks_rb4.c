@@ -36,6 +36,7 @@ typedef struct _OIRB4OpenDevice {
 
 #define MAX_DEVICE_COUNT 4
 static OIRB4OpenDevice open_devices[MAX_DEVICE_COUNT] = { 0 };
+static libusb_device_handle *x360_leds[MAX_DEVICE_COUNT] = { NULL };
 
 int(*TsceUsbdOpen)(int);
 int(*TsceUsbdClose)(int);
@@ -173,13 +174,13 @@ void ParseWirelessXInputCallback(struct libusb_transfer *transfer) {
 
 void set_xbox_360_player_led(libusb_device_handle *handle, int playerIndex) {
     // Determine LED pattern
-    uint8_t ledPattern = 0x00;
+    uint8_t ledPattern = X360_LED_ALL_OFF;
     switch (playerIndex) {
-        case 1: ledPattern = 0x06; break;
-        case 2: ledPattern = 0x07; break;
-        case 3: ledPattern = 0x08; break;
-        case 4: ledPattern = 0x09; break;
-        default: ledPattern = 0x00; break;
+        case 1: ledPattern = X360_LED_P1_FLASH; break;
+        case 2: ledPattern = X360_LED_P2_FLASH; break;
+        case 3: ledPattern = X360_LED_P3_FLASH; break;
+        case 4: ledPattern = X360_LED_P4_FLASH; break;
+        default: ledPattern = X360_LED_ALL_OFF; break;
     }
 
     uint8_t buf[] = {
@@ -218,9 +219,25 @@ int TsceUsbdOpen_hook(libusb_device *device, libusb_device_handle **dev_handle) 
             opendevice->type = type;
             opendevice->device_handle = *dev_handle;
 
-            // Set player LED if Xbox 360 controller
+            // Set XBOX 360 player LEDs
             if (type == RB4_Type_XInputGuitar || type == RB4_Type_XInputDrums) {
-                set_xbox_360_player_led(*dev_handle, 1); // Set to Player 1
+                // Find lowest available player slot
+                int player_slot = -1;
+                for (int i = 0; i < MAX_DEVICE_COUNT; i++) {
+                    if (x360_leds[i] == NULL) {
+                        x360_leds[i] = *dev_handle;
+                        player_slot = i+1;
+                        break;
+                    }
+                }
+
+                if (player_slot > 0) {
+                    set_xbox_360_player_led(*dev_handle, player_slot);
+                    final_printf("Assigned player slot %d\n", player_slot);
+                } else {
+                    final_printf("No free player slots available\n");
+                }
+                
             }
         }
     }
@@ -231,6 +248,16 @@ void TsceUsbdClose_hook(libusb_device_handle *dev_handle) {
     //final_printf("sceUsbdClose_hook\n");
     if (dev_handle == NULL)
         return;
+
+    // Release player slot
+    for (int i = 0; i < MAX_DEVICE_COUNT; i++) {
+        if (x360_leds[i] == dev_handle) {
+            x360_leds[i] = NULL;
+            final_printf("Released player slot %d\n", i + 1);
+            break;
+        }
+    }
+
     sceUsbdClose(dev_handle);
     if (dev_handle != NULL) {
         OIRB4OpenDevice *opendevice = GetOpenDeviceFromDeviceHandle(dev_handle);
