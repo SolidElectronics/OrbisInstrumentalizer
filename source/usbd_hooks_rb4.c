@@ -171,6 +171,41 @@ void ParseWirelessXInputCallback(struct libusb_transfer *transfer) {
     ParseXInputCallback(transfer);
 }
 
+void set_xbox_360_player_led(libusb_device_handle *handle, int playerIndex) {
+    // Determine LED pattern
+    uint8_t ledPattern = 0x00;
+    switch (playerIndex) {
+        case 1: ledPattern = 0x06; break;
+        case 2: ledPattern = 0x07; break;
+        case 3: ledPattern = 0x08; break;
+        case 4: ledPattern = 0x09; break;
+        default: ledPattern = 0x00; break;
+    }
+
+    uint8_t buf[] = {
+        0x01,        // Report ID for LEDs
+        0x03,        // Command: Set LED
+        ledPattern   // LED pattern for player index
+    };
+
+    int res = sceUsbdControlTransfer(
+        handle,
+        0x21,                            // bmRequestType: Class | Interface | Host to Device
+        0x09,                            // bRequest: SET_REPORT
+        (2 << 8) | buf[0],               // wValue: (Output report << 8) | Report ID
+        0,                               // wIndex: Interface number (0 assumed)
+        buf,
+        sizeof(buf),
+        1000                             // Timeout in ms
+    );
+
+    if (res < 0) {
+        final_printf("LED control failed: %d\n", res);
+    } else {
+        final_printf("Set LED to player %d (pattern 0x%02X)\n", playerIndex, ledPattern);
+    }
+}
+
 int TsceUsbdOpen_hook(libusb_device *device, libusb_device_handle **dev_handle) {
     //final_printf("sceUsbdOpen_hook\n");
     int r = sceUsbdOpen(device, dev_handle);
@@ -184,7 +219,7 @@ int TsceUsbdOpen_hook(libusb_device *device, libusb_device_handle **dev_handle) 
             opendevice->device_handle = *dev_handle;
 
             // Set player LED if Xbox 360 controller
-            if (type == RB4_Type_Xbox360_Guitar || type == RB4_Type_Xbox360_Drum) {
+            if (type == RB4_Type_XInputGuitar || type == RB4_Type_XInputDrums) {
                 set_xbox_360_player_led(*dev_handle, 1); // Set to Player 1
             }
         }
@@ -320,48 +355,4 @@ void DestroyUsbdHooks() {
     UNHOOK(TsceUsbdFillInterruptTransfer);
     UNHOOK(TsceUsbdOpen);
     UNHOOK(TsceUsbdClose);
-}
-
-void set_xbox_360_player_led(libusb_device_handle *handle, int playerIndex) {
-    libusb_device *device = libusb_get_device(handle);
-    struct libusb_config_descriptor *config = NULL;
-    int interface_number = 0;
-
-    if (libusb_get_active_config_descriptor(device, &config) == 0 && config->bNumInterfaces > 0) {
-        interface_number = config->interface[0].altsetting[0].bInterfaceNumber;
-        libusb_free_config_descriptor(config);
-    } else {
-        final_printf("Could not get config descriptor; defaulting interface to 0.\n");
-    }    
-
-    // Determine LED pattern
-    uint8_t ledPattern = 0x00;
-    switch (playerIndex) {
-        case 1: ledPattern = 0x06; break;
-        case 2: ledPattern = 0x07; break;
-        case 3: ledPattern = 0x08; break;
-        case 4: ledPattern = 0x09; break;
-        default: ledPattern = 0x00; break;
-    }
-
-    uint8_t buf[] = {
-        0x01,        // Report ID for LEDs
-        0x03,        // Command: Set LED
-        ledPattern   // LED pattern for player index
-    };
-
-    int res = libusb_control_transfer(
-        handle,
-        LIBUSB_REQUEST_TYPE_CLASS | LIBUSB_RECIPIENT_INTERFACE | LIBUSB_ENDPOINT_OUT,
-        0x09,                     // HID Set_Report
-        (2 << 8) | 0x01,          // wValue: Report Type (Output) << 8 | Report ID
-        interface_number,         // Interface number (usually 0)
-        buf,
-        sizeof(buf),
-        1000                      // Timeout in ms
-    );
-
-    if (res < 0) {
-        final_printf("Failed to set Xbox 360 LED: %d\n", res);
-    }
 }
