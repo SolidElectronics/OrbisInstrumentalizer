@@ -125,42 +125,49 @@ typedef struct _ps3_rb_guitar_report {
 
 libusb_transfer_cb_fn interrupt_callback;
 
-// This needs to know what type of instrument we're using so it can map the controls correctly.
 void ParseXInputCallback(struct libusb_transfer *transfer) {
     //final_printf("ParseXInputCallback\n");
     if (transfer->status == LIBUSB_TRANSFER_COMPLETED) {
         ps3_rb_guitar_report parsed_report = { 0 };
         xinput_report_controls *xparsed = (xinput_report_controls *)transfer->buffer;
-        
-        // fret buttons (todo: make sure this is right for drums)
-        if ((xparsed->buttons2 & XINPUT_BUTTON_A) != 0) parsed_report.buttons |= BIT(1);     // green
-        if ((xparsed->buttons2 & XINPUT_BUTTON_B) != 0) parsed_report.buttons |= BIT(2);     // red
-        if ((xparsed->buttons2 & XINPUT_BUTTON_Y) != 0) parsed_report.buttons |= BIT(3);     // yellow
-        if ((xparsed->buttons2 & XINPUT_BUTTON_X) != 0) parsed_report.buttons |= BIT(0);     // blue
-        if ((xparsed->buttons2 & XINPUT_BUTTON_LB) != 0) parsed_report.buttons |= BIT(4);    // orange / (drums) kick pedal
-        if ((xparsed->buttons2 & XINPUT_BUTTON_RB) != 0) parsed_report.buttons |= BIT(11);   // (drums) cymbal modifier
-        
-        // special buttons
-        if ((xparsed->buttons1 & XINPUT_BUTTON_BACK) != 0) parsed_report.buttons |= BIT(8);  // back
-        if ((xparsed->buttons1 & XINPUT_BUTTON_START) != 0) parsed_report.buttons |= BIT(9); // start
-        if ((xparsed->buttons1 & XINPUT_BUTTON_R3) != 0) parsed_report.buttons |= BIT(10);   // (drums) pad modifier
-        // Since we don't know whether this a drum or guitar, we can't know which function L3 should activate, so just do both.
-        // Does this trigger overdrive on lower fret press?  Probably?  Yes.
-        if ((xparsed->buttons1 & XINPUT_BUTTON_L3) != 0) parsed_report.buttons |= BIT(5);    // (drums) second kick pedal     : (guitar) tilt
-        if ((xparsed->buttons1 & XINPUT_BUTTON_L3) != 0) parsed_report.buttons |= BIT(6);    // (guitar) Lower frets modifier : (drums) unused
 
-        // dpad/strum bar
+        // Lookup device type so we know how to handle inputs
+        OIRB4DeviceType instrument_type = RB4_Type_None;
+        libusb_device_handle *dev_handle = transfer->dev_handle;
+        for (int i = 0; i < MAX_DEVICE_COUNT; i++) {
+            if (open_devices[i].is_open && open_devices[i].device_handle == dev_handle) {
+                instrument_type = open_devices[i].type;
+                break;
+            }
+        }
+
+        // Common buttons/frets/pads
+        if ((xparsed->buttons2 & XINPUT_BUTTON_A) != 0) parsed_report.buttons |= BIT(1);     // Green
+        if ((xparsed->buttons2 & XINPUT_BUTTON_B) != 0) parsed_report.buttons |= BIT(2);     // Red
+        if ((xparsed->buttons2 & XINPUT_BUTTON_Y) != 0) parsed_report.buttons |= BIT(3);     // Yellow
+        if ((xparsed->buttons2 & XINPUT_BUTTON_X) != 0) parsed_report.buttons |= BIT(0);     // Blue
+        if ((xparsed->buttons1 & XINPUT_BUTTON_BACK) != 0) parsed_report.buttons |= BIT(8);  // Back
+        if ((xparsed->buttons1 & XINPUT_BUTTON_START) != 0) parsed_report.buttons |= BIT(9); // Start
+
+        // Common dpad/strum
         parsed_report.hat = 0x08;  // Center
         if ((xparsed->buttons1 & XINPUT_BUTTON_UP) != 0) parsed_report.hat = 0x00;
         if ((xparsed->buttons1 & XINPUT_BUTTON_DOWN) != 0) parsed_report.hat = 0x04;
         if ((xparsed->buttons1 & XINPUT_BUTTON_LEFT) != 0) parsed_report.hat = 0x06;
         if ((xparsed->buttons1 & XINPUT_BUTTON_RIGHT) != 0) parsed_report.hat = 0x02;
 
-        // whammy
-        parsed_report.whammy = (uint8_t)((uint16_t)xparsed->right_stick_x / 0x100);
-        // tilt
-        if (xparsed->right_stick_y >= 0x4000) parsed_report.buttons |= BIT(5);               // Guitar sends value between 0 and 0x7FFF, boil down to a button press
+        if (instrument_type == RB4_Type_XInputGuitar) {
+            if ((xparsed->buttons2 & XINPUT_BUTTON_LB) != 0) {parsed_report.buttons |= BIT(4);}   // Orange
+            if ((xparsed->buttons1 & XINPUT_BUTTON_L3) != 0) {parsed_report.buttons |= BIT(6);}   // Lower frets/solo modifer
+            if (xparsed->right_stick_y >= 0x4000) {parsed_report.buttons |= BIT(5);}              // Tilt (guitar sends value between 0 and 0x7FFF, boil down to a button press)
+            parsed_report.whammy = (uint8_t)((uint16_t)xparsed->right_stick_x / 0x100);           // Whammy (analog)
 
+        } else if (instrument_type == RB4_Type_XInputDrums) {
+            if ((xparsed->buttons2 & XINPUT_BUTTON_LB) != 0) {parsed_report.buttons |= BIT(4);}   // Kick pedal 1
+            if ((xparsed->buttons1 & XINPUT_BUTTON_L3) != 0) {parsed_report.buttons |= BIT(5);}   // Kick pedal 2
+            if ((xparsed->buttons1 & XINPUT_BUTTON_R3) != 0) {parsed_report.buttons |= BIT(10);}  // Pad modifier
+            if ((xparsed->buttons2 & XINPUT_BUTTON_RB) != 0) {parsed_report.buttons |= BIT(11);}  // Cymbal modifier
+        }
 
         // copy the new parsed report back into the buffer
         memcpy(transfer->buffer, &parsed_report, transfer->length);
