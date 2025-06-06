@@ -34,6 +34,7 @@ typedef struct _OIRB4OpenDevice {
     uint8_t last_report[30];
 } OIRB4OpenDevice;
 
+#define BIT(i) (1 << i)
 #define MAX_DEVICE_COUNT 4
 static OIRB4OpenDevice open_devices[MAX_DEVICE_COUNT] = { 0 };
 static libusb_device_handle *x360_leds[MAX_DEVICE_COUNT] = { NULL };
@@ -105,7 +106,6 @@ static OIRB4DeviceType IdentifyDevice(libusb_device *device) {
     return type;
 }
 
-#define BIT(i) (1 << i)
 // TODO: this seems bad i dont even know if it do drum
 typedef struct _ps3_rb_guitar_report {
     uint16_t buttons;
@@ -122,7 +122,10 @@ typedef struct _ps3_rb_guitar_report {
     uint8_t unk_2;
     uint16_t gyro;
 } ps3_rb_guitar_report;
+
 libusb_transfer_cb_fn interrupt_callback;
+
+// This needs to know what type of instrument we're using so it can map the controls correctly.
 void ParseXInputCallback(struct libusb_transfer *transfer) {
     //final_printf("ParseXInputCallback\n");
     if (transfer->status == LIBUSB_TRANSFER_COMPLETED) {
@@ -130,33 +133,41 @@ void ParseXInputCallback(struct libusb_transfer *transfer) {
         xinput_report_controls *xparsed = (xinput_report_controls *)transfer->buffer;
         
         // fret buttons (todo: make sure this is right for drums)
-        if ((xparsed->buttons2 & XINPUT_BUTTON_A) != 0) parsed_report.buttons |= BIT(1); // green
-        if ((xparsed->buttons2 & XINPUT_BUTTON_B) != 0) parsed_report.buttons |= BIT(2); // red
-        if ((xparsed->buttons2 & XINPUT_BUTTON_Y) != 0) parsed_report.buttons |= BIT(3); // yellow
-        if ((xparsed->buttons2 & XINPUT_BUTTON_X) != 0) parsed_report.buttons |= BIT(0); // blue
-        if ((xparsed->buttons2 & XINPUT_BUTTON_LB) != 0) parsed_report.buttons |= BIT(4); // orange / (drums) kick
-        if ((xparsed->buttons2 & XINPUT_BUTTON_RB) != 0) parsed_report.buttons |= BIT(11); // (drums) cymbal
+        if ((xparsed->buttons2 & XINPUT_BUTTON_A) != 0) parsed_report.buttons |= BIT(1);     // green
+        if ((xparsed->buttons2 & XINPUT_BUTTON_B) != 0) parsed_report.buttons |= BIT(2);     // red
+        if ((xparsed->buttons2 & XINPUT_BUTTON_Y) != 0) parsed_report.buttons |= BIT(3);     // yellow
+        if ((xparsed->buttons2 & XINPUT_BUTTON_X) != 0) parsed_report.buttons |= BIT(0);     // blue
+        if ((xparsed->buttons2 & XINPUT_BUTTON_LB) != 0) parsed_report.buttons |= BIT(4);    // orange / (drums) kick pedal
+        if ((xparsed->buttons2 & XINPUT_BUTTON_RB) != 0) parsed_report.buttons |= BIT(11);   // (drums) cymbal modifier
+        
         // special buttons
-        if ((xparsed->buttons1 & XINPUT_BUTTON_L3) != 0) parsed_report.buttons |= BIT(5); // (drums) kick 2
-        if ((xparsed->buttons1 & XINPUT_BUTTON_BACK) != 0) parsed_report.buttons |= BIT(8); // back
+        if ((xparsed->buttons1 & XINPUT_BUTTON_BACK) != 0) parsed_report.buttons |= BIT(8);  // back
         if ((xparsed->buttons1 & XINPUT_BUTTON_START) != 0) parsed_report.buttons |= BIT(9); // start
-        if ((xparsed->buttons1 & XINPUT_BUTTON_R3) != 0) parsed_report.buttons |= BIT(10); // (drums) pad
+        if ((xparsed->buttons1 & XINPUT_BUTTON_R3) != 0) parsed_report.buttons |= BIT(10);   // (drums) pad modifier
+        // Since we don't know whether this a drum or guitar, we can't know which function L3 should activate, so just do both.
+        // Does this trigger overdrive on lower fret press?  Probably?  Yes.
+        if ((xparsed->buttons1 & XINPUT_BUTTON_L3) != 0) parsed_report.buttons |= BIT(5);    // (drums) second kick pedal     : (guitar) tilt
+        if ((xparsed->buttons1 & XINPUT_BUTTON_L3) != 0) parsed_report.buttons |= BIT(6);    // (guitar) Lower frets modifier : (drums) unused
+
         // dpad/strum bar
-        parsed_report.hat = 0x08;
+        parsed_report.hat = 0x08;  // Center
         if ((xparsed->buttons1 & XINPUT_BUTTON_UP) != 0) parsed_report.hat = 0x00;
         if ((xparsed->buttons1 & XINPUT_BUTTON_DOWN) != 0) parsed_report.hat = 0x04;
         if ((xparsed->buttons1 & XINPUT_BUTTON_LEFT) != 0) parsed_report.hat = 0x06;
         if ((xparsed->buttons1 & XINPUT_BUTTON_RIGHT) != 0) parsed_report.hat = 0x02;
+
         // whammy
         parsed_report.whammy = (uint8_t)((uint16_t)xparsed->right_stick_x / 0x100);
         // tilt
-        parsed_report.accel_x = (uint8_t)((uint16_t)xparsed->right_stick_y / 0x100);
+        if (xparsed->right_stick_y >= 0x4000) parsed_report.buttons |= BIT(5);               // Guitar sends value between 0 and 0x7FFF, boil down to a button press
+
 
         // copy the new parsed report back into the buffer
         memcpy(transfer->buffer, &parsed_report, transfer->length);
     }
     interrupt_callback(transfer);
 }
+
 void ParseWirelessXInputCallback(struct libusb_transfer *transfer) {
     // sometimes the wireless report will just be a silly nothingpacket
     // so we have to log the last actual packet somewhere
@@ -176,10 +187,10 @@ void set_xbox_360_player_led(libusb_device_handle *handle, int playerIndex) {
     // Determine LED pattern
     uint8_t ledPattern = X360_LED_ALL_OFF;
     switch (playerIndex) {
-        case 1: ledPattern = X360_LED_P1_FLASH; break;
-        case 2: ledPattern = X360_LED_P2_FLASH; break;
-        case 3: ledPattern = X360_LED_P3_FLASH; break;
-        case 4: ledPattern = X360_LED_P4_FLASH; break;
+        case 1: ledPattern = X360_LED_P1; break;
+        case 2: ledPattern = X360_LED_P2; break;
+        case 3: ledPattern = X360_LED_P3; break;
+        case 4: ledPattern = X360_LED_P4; break;
         default: ledPattern = X360_LED_ALL_OFF; break;
     }
 
@@ -197,7 +208,7 @@ void set_xbox_360_player_led(libusb_device_handle *handle, int playerIndex) {
         0,                               // wIndex: Interface number (0 assumed)
         buf,
         sizeof(buf),
-        1000                             // Timeout in ms
+        10                               // Timeout in ms
     );
 
     if (res < 0) {
